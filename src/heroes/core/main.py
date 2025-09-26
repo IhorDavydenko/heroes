@@ -1,19 +1,37 @@
 # heroes_optimizer.py
 # Требуется: pip install psycopg2-binary pulp
 
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Iterable, DefaultDict
+from typing import Dict, List, Tuple, Optional, Iterable, Set
 from collections import defaultdict
+from pathlib import Path
 import os
 import psycopg2
 import pulp  # CBC MILP solver
 
 
-# ---- добавьте в heroes_optimizer.py ----
-from typing import Iterable
+def _load_env_file(path: Optional[Path] = None) -> None:
+    """Load variables from a simple ``.env`` file into ``os.environ``.
+
+    Values that are already defined in the environment are left untouched.
+    """
+
+    env_path = path or Path(__file__).resolve().parents[3] / ".env"
+    if not env_path.exists():
+        return
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
 
 def print_human_report(
-    repo: PgRepository,
+    repo: "PgRepository",
     culture_code: str,
     cycle_code: str,
     target_building_type_code: str,
@@ -22,7 +40,7 @@ def print_human_report(
     result: OptimizationResult
 ):
     # 1) Собираем общий план с учетом целевого здания
-    counts: Dict[Tuple[str,int], int] = defaultdict(int)
+    counts: Dict[Tuple[str, int], int] = defaultdict(int)
     counts[(target_building_type_code, target_level)] += target_count
     for bt, levels in result.plan.items():
         for lvl, cnt in levels.items():
@@ -43,8 +61,8 @@ def print_human_report(
         rows = cur.fetchall()
 
     # 3) Индекс потоков по (тип,уровень)
-    flows: Dict[Tuple[str,int], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
-    resources: set = set()
+    flows: Dict[Tuple[str, int], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    resources: Set[str] = set()
     for bt_code, lvl, res_code, qty in rows:
         flows[(bt_code, lvl)][res_code] += float(qty)
         resources.add(res_code)
@@ -121,7 +139,34 @@ class OptimizationResult:
 
 class PgRepository:
     def __init__(self, dsn: Optional[str] = None):
-        self.dsn = dsn or os.getenv('DATABASE_URL') or 'dbname=postgres user=postgres host=localhost password=VeryStrongPassword!'
+        _load_env_file()
+
+        if dsn:
+            self.dsn = dsn
+            return
+
+        env_dsn = os.getenv("DATABASE_URL")
+        if env_dsn:
+            self.dsn = env_dsn
+            return
+
+        dbname = os.getenv("DB_NAME", "postgres")
+        user = os.getenv("DB_USER", "postgres")
+        password = os.getenv("DB_PASSWORD", "")
+        host = os.getenv("DB_HOST", "localhost")
+        port = os.getenv("DB_PORT", "5432")
+
+        dsn_parts = [
+            f"dbname={dbname}",
+            f"user={user}",
+            f"host={host}",
+        ]
+        if port:
+            dsn_parts.append(f"port={port}")
+        if password:
+            dsn_parts.append(f"password={password}")
+
+        self.dsn = " ".join(dsn_parts)
     def _conn(self):
         return psycopg2.connect(self.dsn)
 

@@ -108,7 +108,7 @@ result = opt.optimize_for_target_resource(
 ## Развёртывание
 1. Применить ваш DDL, затем `heroes_init_china.sql` (DML).  
 2. Установить зависимости: `pip install psycopg2-binary pulp`.  
-3. Задать `DATABASE_URL` или передать `dsn` в `PgRepository`.  
+3. Настроить переменные подключения в файле `.env` (или задать `DATABASE_URL` вручную) либо передать `dsn` в `PgRepository`.
 4. Запустить пример из `__main__` или импортировать класс в консольных скриптах.
 
 ## План фронтенда (на будущее)
