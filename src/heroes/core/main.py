@@ -2,11 +2,100 @@
 # Требуется: pip install psycopg2-binary pulp
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, DefaultDict
+from typing import Dict, List, Tuple, Optional, Iterable, DefaultDict
 from collections import defaultdict
 import os
 import psycopg2
 import pulp  # CBC MILP solver
+
+
+# ---- добавьте в heroes_optimizer.py ----
+from typing import Iterable
+
+def print_human_report(
+    repo: PgRepository,
+    culture_code: str,
+    cycle_code: str,
+    target_building_type_code: str,
+    target_level: int,
+    target_count: int,
+    result: OptimizationResult
+):
+    # 1) Собираем общий план с учетом целевого здания
+    counts: Dict[Tuple[str,int], int] = defaultdict(int)
+    counts[(target_building_type_code, target_level)] += target_count
+    for bt, levels in result.plan.items():
+        for lvl, cnt in levels.items():
+            counts[(bt, lvl)] += cnt
+
+    # 2) Тянем потоки для нужной культуры/цикла (вытянем все и отфильтруем по counts)
+    with repo._conn() as conn, conn.cursor() as cur:
+        cur.execute("""
+            select bt.code, b.level, r.code, f.quantity
+            from heroes.flow f
+            join heroes.building b on b.id = f.building_id
+            join heroes.building_type bt on bt.id = b.type
+            join heroes.cycle cy on cy.id = f.cycle_id
+            join heroes.resource r on r.id = f.resource_id
+            join heroes.culture cu on cu.id = bt.culture_id
+            where cu.code=%s and cy.code=%s
+        """, (culture_code, cycle_code))
+        rows = cur.fetchall()
+
+    # 3) Индекс потоков по (тип,уровень)
+    flows: Dict[Tuple[str,int], Dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    resources: set = set()
+    for bt_code, lvl, res_code, qty in rows:
+        flows[(bt_code, lvl)][res_code] += float(qty)
+        resources.add(res_code)
+
+    # 4) Агрегируем производство/потребление по ресурсам
+    total_prod: Dict[str, float] = defaultdict(float)
+    total_cons: Dict[str, float] = defaultdict(float)
+
+    for (bt, lvl), cnt in counts.items():
+        if cnt <= 0: continue
+        for res, q in flows[(bt, lvl)].items():
+            if q > 0:
+                total_prod[res] += q * cnt
+            elif q < 0:
+                total_cons[res] += (-q) * cnt  # положительное потребление
+
+    # 5) Красивый вывод
+    def fmt_rows(rows: Iterable[Tuple[str, ...]]) -> str:
+        # простой моноширинный табличный принтер
+        cols = list(zip(*rows))
+        widths = [max(len(x) for x in col) for col in cols]
+        out = []
+        for r in rows:
+            out.append("  ".join(s.ljust(w) for s, w in zip(r, widths)))
+        return "\n".join(out)
+
+    print("="*72)
+    print(f"Цель: {target_count}× {target_building_type_code} L{target_level}  |  Культура={culture_code}  Цикл={cycle_code}")
+    print("-"*72)
+    print("Нижние здания:")
+    b_rows = [("Здание (ур.)", "Кол-во")]
+    for (bt, lvl), cnt in sorted(counts.items(), key=lambda x: (x[0][0], x[0][1])):
+        # не печатаем целевое в этом блоке
+        if bt == target_building_type_code and lvl == target_level:
+            continue
+        b_rows.append((f"{bt} L{lvl}", str(cnt)))
+    print(fmt_rows(b_rows))
+    print(f"Итого нижних зданий: {sum(int(r[1]) for r in b_rows[1:])}")
+    print("-"*72)
+    print("Баланс ресурсов за цикл:")
+    r_rows = [("Ресурс", "Потребление", "Производство", "Профицит")]
+    for res in sorted(resources):
+        cons = total_cons.get(res, 0.0)
+        prod = total_prod.get(res, 0.0)
+        surplus = prod - cons
+        if abs(cons) < 1e-9 and abs(prod) < 1e-9:
+            continue
+        r_rows.append((res, f"{cons:.0f}", f"{prod:.0f}", f"{surplus:.0f}"))
+    print(fmt_rows(r_rows))
+    print("="*72)
+
 
 @dataclass(frozen=True)
 class FlowRecord:
@@ -32,7 +121,7 @@ class OptimizationResult:
 
 class PgRepository:
     def __init__(self, dsn: Optional[str] = None):
-        self.dsn = dsn or os.getenv('DATABASE_URL') or 'dbname=postgres user=postgres host=localhost'
+        self.dsn = dsn or os.getenv('DATABASE_URL') or 'dbname=postgres user=postgres host=localhost password=VeryStrongPassword!'
     def _conn(self):
         return psycopg2.connect(self.dsn)
 
@@ -209,14 +298,23 @@ class ProductionOptimizer:
 if __name__ == '__main__':
     repo = PgRepository()
     opt = ProductionOptimizer(repo)
-    max_lvls = {'MOTH_GLADE':3, 'RICE_FARM':2, 'THREAD_PROCESSOR':2, 'SILK_WORKSHOP':3}
-    res = opt.optimize_for_target_resource(
-        culture_code='CHINA', cycle_code='H1',
-        target_resource_code='SILK',
-        producer_building_type_code='SILK_WORKSHOP', producer_level=3, producer_count=1,
+    max_lvls = {'MOTH_GLADE':3, 'RICE_FARM':3, 'THREAD_PROCESSOR':2, 'SILK_WORKSHOP':3}
+
+    result = opt.optimize_for_target_building(
+        culture_code="CHINA",
+        cycle_code="H1",
+        target_building_type_code="SILK_WORKSHOP",
+        target_level=3,
+        target_count=1,
         max_level_by_type=max_lvls
     )
-    print('Status:', res.status)
-    print('Plan:', res.plan)
-    print('Surplus:', res.resource_surplus)
-    print('Total aux buildings:', res.total_aux_buildings)
+
+    print_human_report(
+        repo,
+        culture_code="CHINA",
+        cycle_code="H1",
+        target_building_type_code="SILK_WORKSHOP",
+        target_level=3,
+        target_count=1,
+        result=result
+    )
