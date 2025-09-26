@@ -49,14 +49,9 @@ def print_human_report(
     # 2) Тянем потоки для нужной культуры/цикла (вытянем все и отфильтруем по counts)
     with repo._conn() as conn, conn.cursor() as cur:
         cur.execute("""
-            select bt.code, b.level, r.code, f.quantity
-            from heroes.flow f
-            join heroes.building b on b.id = f.building_id
-            join heroes.building_type bt on bt.id = b.type
-            join heroes.cycle cy on cy.id = f.cycle_id
-            join heroes.resource r on r.id = f.resource_id
-            join heroes.culture cu on cu.id = bt.culture_id
-            where cu.code=%s and cy.code=%s
+            select f.building, f.level, f.resource, f.quantity
+              from heroes.flow f
+             where f.culture=%s and f.cycle=%s
         """, (culture_code, cycle_code))
         rows = cur.fetchall()
 
@@ -117,7 +112,6 @@ def print_human_report(
 
 @dataclass(frozen=True)
 class FlowRecord:
-    building_id: int
     building_type_code: str
     level: int
     resource_code: str
@@ -127,8 +121,8 @@ class FlowRecord:
 class ModelData:
     resource_codes: List[str]
     building_types: List[str]
-    flows_by_building: Dict[int, List[FlowRecord]]
-    building_id_by_type_level: Dict[Tuple[str, int], int]
+    flows_by_building: Dict[Tuple[str, int], List[FlowRecord]]
+    building_key_by_type_level: Dict[Tuple[str, int], Tuple[str, int]]
 
 @dataclass
 class OptimizationResult:
@@ -175,7 +169,7 @@ class PgRepository:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute('select code from heroes.resource order by code;')
             resource_codes = [r[0] for r in cur.fetchall()]
-            cur.execute('select code from heroes.building_type order by code;')
+            cur.execute('select code from heroes.building order by code;')
             building_types = [r[0] for r in cur.fetchall()]
 
             cur.execute('select id from heroes.culture where code=%s;', (culture_code,))
@@ -183,43 +177,30 @@ class PgRepository:
             if culture_id is None:
                 raise ValueError(f'Unknown culture {culture_code}')
 
-            cur.execute('select id from heroes.cycle where code=%s;', (cycle_code,))
-            cycle_id = (cur.fetchone() or [None])[0]
-            if cycle_id is None:
+            cur.execute('select 1 from heroes.cycle where code=%s;', (cycle_code,))
+            if cur.fetchone() is None:
                 raise ValueError(f'Unknown cycle {cycle_code}')
 
-            cur.execute('''
-                select b.id, bt.code, b.level
-                from heroes.building b
-                join heroes.building_type bt on bt.id = b.type
-                where bt.culture_id = %s
-                order by bt.code, b.level
-            ''', (culture_id,))
-            rows = cur.fetchall()
+            flows_by_building: Dict[Tuple[str, int], List[FlowRecord]] = defaultdict(list)
+            building_key_by_type_level: Dict[Tuple[str, int], Tuple[str, int]] = {}
 
-            building_id_by_type_level = {}
-            allowed_buildings = []
-            for b_id, bt_code, level in rows:
+            cur.execute('''
+                select f.building, f.level, f.resource, f.quantity
+                  from heroes.flow f
+                 where f.culture = %s and f.cycle = %s
+            ''', (culture_code, cycle_code))
+            for bt_code, level, res_code, qty in cur.fetchall():
                 max_lvl = max_level_by_type.get(bt_code, 10**9)
-                if max_lvl > 0 and level <= max_lvl:
-                    building_id_by_type_level[(bt_code, level)] = b_id
-                    allowed_buildings.append(b_id)
-            if not allowed_buildings:
+                if max_lvl <= 0 or level > max_lvl:
+                    continue
+                key = (bt_code, level)
+                flows_by_building[key].append(FlowRecord(bt_code, level, res_code, float(qty)))
+                building_key_by_type_level[key] = key
+
+            if not building_key_by_type_level:
                 raise ValueError('Нет доступных уровней зданий при заданных ограничениях.')
 
-            flows_by_building = defaultdict(list)
-            cur.execute('''
-                select f.building_id, bt.code, b.level, r.code, f.quantity
-                from heroes.flow f
-                join heroes.building b on b.id = f.building_id
-                join heroes.building_type bt on bt.id = b.type
-                join heroes.resource r on r.id = f.resource_id
-                where f.building_id = any(%s) and f.cycle_id = %s
-            ''', (allowed_buildings, cycle_id))
-            for b_id, bt_code, level, res_code, qty in cur.fetchall():
-                flows_by_building[b_id].append(FlowRecord(b_id, bt_code, level, res_code, float(qty)))
-
-            return ModelData(resource_codes, building_types, flows_by_building, building_id_by_type_level)
+            return ModelData(resource_codes, building_types, flows_by_building, building_key_by_type_level)
 
 class ProductionOptimizer:
     BIG_M = 10**6
@@ -227,7 +208,7 @@ class ProductionOptimizer:
         self.repo = repo
 
     @staticmethod
-    def _consumed_resources(flows_by_building: Dict[int, List[FlowRecord]]) -> List[str]:
+    def _consumed_resources(flows_by_building: Dict[Tuple[str, int], List[FlowRecord]]) -> List[str]:
         s = set()
         for recs in flows_by_building.values():
             for fr in recs:
@@ -240,40 +221,37 @@ class ProductionOptimizer:
                                      extra_limit_total_buildings: Optional[int] = None) -> OptimizationResult:
         model = self.repo.load_model(culture_code, cycle_code, max_level_by_type)
 
-        target_building_id = model.building_id_by_type_level.get((target_building_type_code, target_level))
-        if target_building_id is None:
+        target_building_key = model.building_key_by_type_level.get((target_building_type_code, target_level))
+        if target_building_key is None:
             with self.repo._conn() as conn, conn.cursor() as cur:
                 cur.execute('''
-                    select b.id
-                    from heroes.building b
-                    join heroes.building_type bt on bt.id = b.type
-                    join heroes.culture cu on cu.id = bt.culture_id
-                    where bt.code=%s and b.level=%s and cu.code=%s
-                ''', (target_building_type_code, target_level, culture_code))
-                r = cur.fetchone()
-                if not r: raise ValueError('Не найдено целевое здание.')
-                target_building_id = r[0]
+                    select 1
+                      from heroes.building b
+                      join heroes.culture cu on cu.id = b.culture_id
+                     where b.code=%s and cu.code=%s
+                ''', (target_building_type_code, culture_code))
+                if cur.fetchone() is None:
+                    raise ValueError('Не найдено целевое здание.')
                 cur.execute('''
-                    select bt.code, r.code, f.quantity
-                    from heroes.flow f
-                    join heroes.building b on b.id = f.building_id
-                    join heroes.building_type bt on bt.id = b.type
-                    join heroes.resource r on r.id = f.resource_id
-                    join heroes.cycle cy on cy.id = f.cycle_id
-                    where f.building_id=%s and cy.code=%s
-                ''', (target_building_id, cycle_code))
+                    select f.resource, f.quantity
+                      from heroes.flow f
+                     where f.culture=%s and f.cycle=%s and f.building=%s and f.level=%s
+                ''', (culture_code, cycle_code, target_building_type_code, target_level))
                 recs = cur.fetchall()
-                if not recs: raise ValueError('Для целевого здания нет потоков на заданном цикле.')
-                model.flows_by_building[target_building_id] = [
-                    FlowRecord(target_building_id, target_building_type_code, target_level, res, float(qty))
-                    for _, res, qty in recs
+                if not recs:
+                    raise ValueError('Для целевого здания нет потоков на заданном цикле.')
+                target_building_key = (target_building_type_code, target_level)
+                model.flows_by_building[target_building_key] = [
+                    FlowRecord(target_building_type_code, target_level, res, float(qty))
+                    for res, qty in recs
                 ]
+                model.building_key_by_type_level[target_building_key] = target_building_key
 
         fixed_flows = defaultdict(float)
-        for fr in model.flows_by_building[target_building_id]:
+        for fr in model.flows_by_building[target_building_key]:
             fixed_flows[fr.resource_code] += fr.quantity * target_count
 
-        decision_buildings = [bid for bid in model.flows_by_building.keys() if bid != target_building_id]
+        decision_buildings = [bid for bid in model.flows_by_building.keys() if bid != target_building_key]
 
         consumed = set(self._consumed_resources(model.flows_by_building))
         consumed.update([res for res, q in fixed_flows.items() if q < 0])
@@ -286,7 +264,10 @@ class ProductionOptimizer:
         if missing: raise RuntimeError(f'Недостижимо: нет производителей для {", ".join(missing)}')
 
         prob = pulp.LpProblem('Heroes_Production_Balance', pulp.LpMinimize)
-        x = {bid: pulp.LpVariable(f'x_b{bid}', lowBound=0, cat=pulp.LpInteger) for bid in decision_buildings}
+        x = {
+            bid: pulp.LpVariable(f"x_{bid[0]}_L{bid[1]}", lowBound=0, cat=pulp.LpInteger)
+            for bid in decision_buildings
+        }
         s = {res: pulp.LpVariable(f'surplus_{res}', lowBound=0, cat=pulp.LpContinuous) for res in consumed}
         prob += (self.BIG_M * pulp.lpSum(x.values())) + pulp.lpSum(s.values())
 
@@ -329,10 +310,13 @@ class ProductionOptimizer:
         tmp = dict(max_level_by_type)
         tmp[producer_building_type_code] = max(tmp.get(producer_building_type_code, 0), producer_level)
         model = self.repo.load_model(culture_code, cycle_code, tmp)
-        b_id = model.building_id_by_type_level.get((producer_building_type_code, producer_level))
-        if b_id is None: raise ValueError('Не найден building для указанного типа/уровня.')
-        produces = any(fr.resource_code == target_resource_code and fr.quantity > 0
-                       for fr in model.flows_by_building[b_id])
+        b_key = model.building_key_by_type_level.get((producer_building_type_code, producer_level))
+        if b_key is None:
+            raise ValueError('Не найдено здание для указанного типа/уровня.')
+        produces = any(
+            fr.resource_code == target_resource_code and fr.quantity > 0
+            for fr in model.flows_by_building[b_key]
+        )
         if not produces:
             raise ValueError(f'Здание {producer_building_type_code} L{producer_level} не производит {target_resource_code}.')
         return self.optimize_for_target_building(
