@@ -30,18 +30,27 @@ def _load_env_file(path: Optional[Path] = None) -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
+@dataclass(frozen=True)
+class TargetBuildingSpec:
+    building_type_code: str
+    level: int
+    count: int
+
+
 def print_human_report(
     repo: "PgRepository",
     culture_code: str,
     cycle_code: str,
-    target_building_type_code: str,
-    target_level: int,
-    target_count: int,
+    targets: List[TargetBuildingSpec],
     result: OptimizationResult
 ):
-    # 1) Собираем общий план с учетом целевого здания
+    if not targets:
+        raise ValueError("Не передано ни одной целевой постройки для отчёта.")
+
+    # 1) Собираем общий план с учетом целевых зданий
     counts: Dict[Tuple[str, int], int] = defaultdict(int)
-    counts[(target_building_type_code, target_level)] += target_count
+    for tgt in targets:
+        counts[(tgt.building_type_code, tgt.level)] += tgt.count
     for bt, levels in result.plan.items():
         for lvl, cnt in levels.items():
             counts[(bt, lvl)] += cnt
@@ -85,13 +94,15 @@ def print_human_report(
         return "\n".join(out)
 
     print("="*72)
-    print(f"Цель: {target_count}× {target_building_type_code} L{target_level}  |  Культура={culture_code}  Цикл={cycle_code}")
+    print(f"Цели  |  Культура={culture_code}  Цикл={cycle_code}")
+    for tgt in targets:
+        print(f"  - {tgt.count}× {tgt.building_type_code} L{tgt.level}")
     print("-"*72)
     print("Нижние здания:")
     b_rows = [("Здание (ур.)", "Кол-во")]
     for (bt, lvl), cnt in sorted(counts.items(), key=lambda x: (x[0][0], x[0][1])):
-        # не печатаем целевое в этом блоке
-        if bt == target_building_type_code and lvl == target_level:
+        # не печатаем целевые здания в этом блоке
+        if any(bt == tgt.building_type_code and lvl == tgt.level for tgt in targets):
             continue
         b_rows.append((f"{bt} L{lvl}", str(cnt)))
     print(fmt_rows(b_rows))
@@ -207,6 +218,39 @@ class ProductionOptimizer:
     def __init__(self, repo: PgRepository):
         self.repo = repo
 
+    def _ensure_building_in_model(self, model: ModelData, culture_code: str, cycle_code: str,
+                                  building_type_code: str, level: int) -> Tuple[str, int]:
+        key = model.building_key_by_type_level.get((building_type_code, level))
+        if key is not None:
+            return key
+
+        with self.repo._conn() as conn, conn.cursor() as cur:
+            cur.execute('''
+                select 1
+                  from heroes.building b
+                  join heroes.culture cu on cu.id = b.culture_id
+                 where b.code=%s and cu.code=%s
+            ''', (building_type_code, culture_code))
+            if cur.fetchone() is None:
+                raise ValueError('Не найдено целевое здание.')
+
+            cur.execute('''
+                select f.resource, f.quantity
+                  from heroes.flow f
+                 where f.culture=%s and f.cycle=%s and f.building=%s and f.level=%s
+            ''', (culture_code, cycle_code, building_type_code, level))
+            recs = cur.fetchall()
+            if not recs:
+                raise ValueError('Для целевого здания нет потоков на заданном цикле.')
+
+        key = (building_type_code, level)
+        model.flows_by_building[key] = [
+            FlowRecord(building_type_code, level, res, float(qty))
+            for res, qty in recs
+        ]
+        model.building_key_by_type_level[key] = key
+        return key
+
     @staticmethod
     def _consumed_resources(flows_by_building: Dict[Tuple[str, int], List[FlowRecord]]) -> List[str]:
         s = set()
@@ -215,43 +259,45 @@ class ProductionOptimizer:
                 if fr.quantity < 0: s.add(fr.resource_code)
         return sorted(s)
 
-    def optimize_for_target_building(self, culture_code: str, cycle_code: str,
-                                     target_building_type_code: str, target_level: int, target_count: int,
-                                     max_level_by_type: Dict[str, int],
-                                     extra_limit_total_buildings: Optional[int] = None) -> OptimizationResult:
+    def optimize_for_targets(
+        self,
+        culture_code: str,
+        cycle_code: str,
+        primary_target: TargetBuildingSpec,
+        secondary_target: Optional[TargetBuildingSpec],
+        max_level_by_type: Dict[str, int],
+        extra_limit_total_buildings: Optional[int] = None
+    ) -> OptimizationResult:
+        targets: List[TargetBuildingSpec] = [primary_target]
+        if secondary_target is not None:
+            targets.append(secondary_target)
+        if len(targets) == 0:
+            raise ValueError('Не указаны целевые здания.')
+        if not any(tgt.count > 0 for tgt in targets):
+            raise ValueError('Количество целевых зданий должно быть положительным.')
+
         model = self.repo.load_model(culture_code, cycle_code, max_level_by_type)
 
-        target_building_key = model.building_key_by_type_level.get((target_building_type_code, target_level))
-        if target_building_key is None:
-            with self.repo._conn() as conn, conn.cursor() as cur:
-                cur.execute('''
-                    select 1
-                      from heroes.building b
-                      join heroes.culture cu on cu.id = b.culture_id
-                     where b.code=%s and cu.code=%s
-                ''', (target_building_type_code, culture_code))
-                if cur.fetchone() is None:
-                    raise ValueError('Не найдено целевое здание.')
-                cur.execute('''
-                    select f.resource, f.quantity
-                      from heroes.flow f
-                     where f.culture=%s and f.cycle=%s and f.building=%s and f.level=%s
-                ''', (culture_code, cycle_code, target_building_type_code, target_level))
-                recs = cur.fetchall()
-                if not recs:
-                    raise ValueError('Для целевого здания нет потоков на заданном цикле.')
-                target_building_key = (target_building_type_code, target_level)
-                model.flows_by_building[target_building_key] = [
-                    FlowRecord(target_building_type_code, target_level, res, float(qty))
-                    for res, qty in recs
-                ]
-                model.building_key_by_type_level[target_building_key] = target_building_key
+        target_keys: Dict[Tuple[str, int], Tuple[str, int]] = {}
+        for tgt in targets:
+            if tgt.count <= 0:
+                continue
+            key = self._ensure_building_in_model(model, culture_code, cycle_code,
+                                                tgt.building_type_code, tgt.level)
+            target_keys[(tgt.building_type_code, tgt.level)] = key
 
         fixed_flows = defaultdict(float)
-        for fr in model.flows_by_building[target_building_key]:
-            fixed_flows[fr.resource_code] += fr.quantity * target_count
+        for tgt in targets:
+            if tgt.count <= 0:
+                continue
+            key = target_keys.get((tgt.building_type_code, tgt.level))
+            if key is None:
+                continue
+            for fr in model.flows_by_building[key]:
+                fixed_flows[fr.resource_code] += fr.quantity * tgt.count
 
-        decision_buildings = [bid for bid in model.flows_by_building.keys() if bid != target_building_key]
+        target_key_set = set(target_keys.values())
+        decision_buildings = [bid for bid in model.flows_by_building.keys() if bid not in target_key_set]
 
         consumed = set(self._consumed_resources(model.flows_by_building))
         consumed.update([res for res, q in fixed_flows.items() if q < 0])
@@ -293,7 +339,8 @@ class ProductionOptimizer:
         plan = defaultdict(lambda: defaultdict(int))
         for bid, var in x.items():
             val = int(round(var.value()))
-            if val <= 0: continue
+            if val <= 0:
+                continue
             fr0 = model.flows_by_building[bid][0]
             plan[fr0.building_type_code][fr0.level] += val
 
@@ -301,6 +348,48 @@ class ProductionOptimizer:
         total_aux = sum(sum(levels.values()) for levels in plan.values())
         return OptimizationResult(plan=dict(plan), resource_surplus=surplus,
                                   total_aux_buildings=total_aux, status='Optimal')
+
+    def optimize_for_target_building(self, culture_code: str, cycle_code: str,
+                                     target_building_type_code: str, target_level: int, target_count: int,
+                                     max_level_by_type: Dict[str, int],
+                                     extra_limit_total_buildings: Optional[int] = None) -> OptimizationResult:
+        primary = TargetBuildingSpec(target_building_type_code, target_level, target_count)
+        return self.optimize_for_targets(
+            culture_code,
+            cycle_code,
+            primary,
+            None,
+            max_level_by_type,
+            extra_limit_total_buildings,
+        )
+
+    def optimize_for_target_buildings(
+        self,
+        culture_code: str,
+        cycle_code: str,
+        first_building_type_code: str,
+        first_level: int,
+        first_count: int,
+        max_level_by_type: Dict[str, int],
+        extra_limit_total_buildings: Optional[int] = None,
+        second_building_type_code: Optional[str] = None,
+        second_level: Optional[int] = None,
+        second_count: int = 0,
+    ) -> OptimizationResult:
+        secondary: Optional[TargetBuildingSpec] = None
+        if second_building_type_code is not None or second_level is not None or second_count:
+            if not (second_building_type_code and second_level is not None):
+                raise ValueError('Для второго здания нужно указать тип и уровень одновременно.')
+            secondary = TargetBuildingSpec(second_building_type_code, second_level, second_count)
+
+        return self.optimize_for_targets(
+            culture_code,
+            cycle_code,
+            TargetBuildingSpec(first_building_type_code, first_level, first_count),
+            secondary,
+            max_level_by_type,
+            extra_limit_total_buildings,
+        )
 
     def optimize_for_target_resource(self, culture_code: str, cycle_code: str,
                                      target_resource_code: str,
@@ -336,49 +425,25 @@ if __name__ == '__main__':
     ######## SILK_WORKSHOP
     # -------------------------------
 
-    v_target_level = 3
-    v_target_count = 3
+    silk = TargetBuildingSpec("SILK_WORKSHOP", 3, 3)
+    porcelain = TargetBuildingSpec("PORCELAIN_WORKSHOP", 4, 1)
 
-    result = opt.optimize_for_target_building(
+    result = opt.optimize_for_target_buildings(
         culture_code="CHINA",
         cycle_code="H1",
-        target_building_type_code="SILK_WORKSHOP",
-        target_level=v_target_level,
-        target_count=v_target_count,
-        max_level_by_type=max_lvls
+        first_building_type_code=silk.building_type_code,
+        first_level=silk.level,
+        first_count=silk.count,
+        max_level_by_type=max_lvls,
+        second_building_type_code=porcelain.building_type_code,
+        second_level=porcelain.level,
+        second_count=porcelain.count,
     )
 
     print_human_report(
         repo,
         culture_code="CHINA",
         cycle_code="H1",
-        target_building_type_code="SILK_WORKSHOP",
-        target_level=v_target_level,
-        target_count=v_target_count,
-        result=result
-    )
-
-    # -------------------------------
-    ######## PORCELAIN_WORKSHOP
-    # -------------------------------
-    v_target_level = 4
-    v_target_count = 1
-
-    result = opt.optimize_for_target_building(
-        culture_code="CHINA",
-        cycle_code="H1",
-        target_building_type_code="PORCELAIN_WORKSHOP",
-        target_level=v_target_level,
-        target_count=v_target_count,
-        max_level_by_type=max_lvls
-    )
-
-    print_human_report(
-        repo,
-        culture_code="CHINA",
-        cycle_code="H1",
-        target_building_type_code="PORCELAIN_WORKSHOP",
-        target_level=v_target_level,
-        target_count=v_target_count,
+        targets=[silk, porcelain],
         result=result
     )
