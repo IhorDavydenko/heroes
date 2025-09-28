@@ -38,8 +38,8 @@ create table if not exists heroes.flow
   culture  text           not null references heroes.culture (code) on delete cascade,
   building text           not null references heroes.building (code) on delete cascade,
   level    int            not null check (level >= 1),
-  resource text           not null references heroes.resource (code) on delete cascade,
   cycle    text           not null references heroes.cycle (code) on delete cascade,
+  resource text           not null references heroes.resource (code) on delete cascade,
   quantity numeric(18, 6) not null, -- штук за интервал
   primary key (culture, building, level, resource, cycle)
 );

@@ -1,58 +1,116 @@
--- heroes_init_china.sql
 -- DML инициализация данных под обновлённую модель:
 --   culture/cycle/resource/building/flow
--- Локация теперь называется culture (пример: CHINA).
+
 -- === Базовые справочники ===
 insert into heroes.culture(code, name) values ('CHINA', 'China') on conflict (code) do update set name = excluded.name;
-
-insert into heroes.cycle(code, name, minutes)
-values ('MIN30', '30 minutes', 30), ('H1', '1 hour', 60), ('H2', '2 hours', 120)
-    on conflict (code) do update set name = excluded.name, minutes = excluded.minutes;
-
-insert into heroes.resource(code, name)
-values ('MOTH_COCOON', 'Moth cocoon'), ('RICE', 'Rice'), ('THREAD', 'Thread'), ('SILK', 'Silk')
-    on conflict (code) do update set name = excluded.name;
 -- === Здания для культуры CHINA ===
-  with c as (select id from heroes.culture where code = 'CHINA')
-insert
-  into heroes.building(code, name, culture_id)
-values ('MOTH_GLADE', 'Moth Glade', (select id from c)),
-       ('RICE_FARM', 'Rice Farm', (select id from c)),
-       ('THREAD_PROCESSOR', 'Thread Processor', (select id from c)),
-       ('SILK_WORKSHOP', 'Silk Workshop', (select id from c))
-    on conflict (code) do update set name = excluded.name, culture_id = excluded.culture_id;
+insert into heroes.building (id, code, name, culture_id)
+values (1, 'MOTH_GLADE',         'Moth Glade',         1),
+       (2, 'RICE_FARM',          'Rice Farm',          1),
+       (3, 'THREAD_PROCESSOR',   'Thread Processor',   1),
+       (4, 'SILK_WORKSHOP',      'Silk Workshop',      1),
+       (5, 'KAOLIN_QUARRY',      'Kaolin Quarry',      1),
+       (6, 'CLAY_PROCESSOR',     'Clay Processor',     1),
+       (7, 'PORCELAIN_WORKSHOP', 'Porcelain Workshop', 1);
 
--- === Потоки (cycle = H1, 60 минут) ===
+insert into heroes.cycle (id, code, minutes, name)
+values (1, 'MIN1',  1,   '1 Minute' ),
+       (2, 'MIN5',  5,   '5 Minutes' ),
+       (2, 'MIN30', 30,  '30 Minutes'),
+       (4, 'H1',    60,  '1 Hour'   ),
+       (5, 'H2',    120, '2 Hour'   );
+
+
+insert into heroes.resource (id, code, name)
+values  (1, 'MOTH_COCOON', 'Moth cocoon'),
+        (2, 'RICE', 'Rice'),
+        (3, 'THREAD', 'Thread'),
+        (4, 'SILK', 'Silk'),
+        (5, 'KAOLIN', 'Kaolin'),
+        (6, 'CLAY', 'Clay'),
+        (7, 'PORCELAIN', 'Porcelain');
+
+
+-- === Потоки ===
 -- Положительное значение -> производит; отрицательное -> потребляет.
--- Moth Glade L3: +1033 MOTH_COCOON
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'MOTH_GLADE', 3, 'MOTH_COCOON', 'H1', 1033.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
--- Rice Farm L2: +375 RICE
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'RICE_FARM', 2, 'RICE', 'H1', 375.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
--- Thread Processor L2: +200 THREAD, -270 RICE, -910 MOTH_COCOON
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'THREAD_PROCESSOR', 2, 'THREAD', 'H1', 200.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
-
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'THREAD_PROCESSOR', 2, 'RICE', 'H1', -270.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
-
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'THREAD_PROCESSOR', 2, 'MOTH_COCOON', 'H1', -910.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
--- Silk Workshop L3: +270 SILK, -490 THREAD, -580 RICE
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'SILK_WORKSHOP', 3, 'SILK', 'H1', 270.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
-
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'SILK_WORKSHOP', 3, 'THREAD', 'H1', -490.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
-
-insert into heroes.flow(culture, building, level, resource, cycle, quantity)
-values ('CHINA', 'SILK_WORKSHOP', 3, 'RICE', 'H1', -580.0)
-    on conflict (culture, building, level, resource, cycle) do update set quantity = excluded.quantity;
+insert into heroes.flow (culture, building, level, cycle, resource, quantity)
+values  ('CHINA', 'CLAY_PROCESSOR', 2, 'H1', 'CLAY', 190.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'H1', 'KAOLIN', -850.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'H1', 'RICE', -190.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN30', 'CLAY', 110.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN30', 'KAOLIN', -500.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN30', 'RICE', -110.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN5', 'CLAY', 20.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN5', 'KAOLIN', -90.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 2, 'MIN5', 'RICE', -20.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H1', 'CLAY', 270.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H1', 'KAOLIN', -1500.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H1', 'RICE', -380.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H2', 'CLAY', 480.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H2', 'KAOLIN', -2700.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'H2', 'RICE', -670.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'MIN30', 'CLAY', 150.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'MIN30', 'KAOLIN', -850.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 3, 'MIN30', 'RICE', -210.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H1', 'CLAY', 550.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H1', 'KAOLIN', -3100.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H1', 'RICE', -750.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H2', 'CLAY', 950.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H2', 'KAOLIN', -5400.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'H2', 'RICE', -1350.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'MIN30', 'CLAY', 300.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'MIN30', 'KAOLIN', -1700.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 4, 'MIN30', 'RICE', -420.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H1', 'CLAY', 800.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H1', 'KAOLIN', -4600.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H1', 'RICE', -1100.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H2', 'CLAY', 1450.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H2', 'KAOLIN', -8400.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'H2', 'RICE', -2000.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'MIN30', 'CLAY', 450.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'MIN30', 'KAOLIN', -2600.000000),
+        ('CHINA', 'CLAY_PROCESSOR', 5, 'MIN30', 'RICE', -630.000000),
+        ('CHINA', 'KAOLIN_QUARRY', 2, 'H1', 'KAOLIN', 1050.000000),
+        ('CHINA', 'KAOLIN_QUARRY', 3, 'H1', 'KAOLIN', 1583.000000),
+        ('CHINA', 'KAOLIN_QUARRY', 4, 'H1', 'KAOLIN', 3250.000000),
+        ('CHINA', 'MOTH_GLADE', 3, 'H1', 'MOTH_COCOON', 1033.000000),
+        ('CHINA', 'MOTH_GLADE', 4, 'H1', 'MOTH_COCOON', 2050.000000),
+        ('CHINA', 'MOTH_GLADE', 5, 'H1', 'MOTH_COCOON', 3000.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'H1', 'CLAY', -470.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'H1', 'PORCELAIN', 140.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'H1', 'RICE', -330.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN30', 'CLAY', -270.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN30', 'PORCELAIN', 80.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN30', 'RICE', -190.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN5', 'CLAY', -50.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN5', 'PORCELAIN', 15.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 2, 'MIN5', 'RICE', -35.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H1', 'CLAY', -720.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H1', 'PORCELAIN', 180.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H1', 'RICE', -580.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H2', 'CLAY', -1300.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H2', 'PORCELAIN', 320.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 3, 'H2', 'RICE', -1000.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H1', 'CLAY', -1450.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H1', 'PORCELAIN', 360.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H1', 'RICE', -1150.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H2', 'CLAY', -2550.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H2', 'PORCELAIN', 640.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'H2', 'RICE', -2050.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'MIN30', 'CLAY', -800.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'MIN30', 'PORCELAIN', 200.000000),
+        ('CHINA', 'PORCELAIN_WORKSHOP', 4, 'MIN30', 'RICE', -640.000000),
+        ('CHINA', 'RICE_FARM', 1, 'H1', 'RICE', 250.000000),
+        ('CHINA', 'RICE_FARM', 2, 'H1', 'RICE', 375.000000),
+        ('CHINA', 'RICE_FARM', 3, 'H1', 'RICE', 583.000000),
+        ('CHINA', 'RICE_FARM', 4, 'H1', 'RICE', 1150.000000),
+        ('CHINA', 'RICE_FARM', 5, 'H1', 'RICE', 1725.000000),
+        ('CHINA', 'SILK_WORKSHOP', 3, 'H1', 'RICE', -580.000000),
+        ('CHINA', 'SILK_WORKSHOP', 3, 'H1', 'SILK', 270.000000),
+        ('CHINA', 'SILK_WORKSHOP', 3, 'H1', 'THREAD', -490.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 2, 'H1', 'MOTH_COCOON', -910.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 2, 'H1', 'RICE', -270.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 2, 'H1', 'THREAD', 200.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 3, 'H1', 'MOTH_COCOON', -910.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 3, 'H1', 'RICE', -270.000000),
+        ('CHINA', 'THREAD_PROCESSOR', 3, 'H1', 'THREAD', 360.000000);

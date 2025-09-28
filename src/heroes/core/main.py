@@ -327,14 +327,24 @@ class ProductionOptimizer:
 if __name__ == '__main__':
     repo = PgRepository()
     opt = ProductionOptimizer(repo)
-    max_lvls = {'MOTH_GLADE':3, 'RICE_FARM':3, 'THREAD_PROCESSOR':2, 'SILK_WORKSHOP':3}
+    # max_lvls = {'MOTH_GLADE':3, 'RICE_FARM':3, 'THREAD_PROCESSOR':3, 'SILK_WORKSHOP':3}
+    # max_lvls = {'MOTH_GLADE':4, 'RICE_FARM':3, 'THREAD_PROCESSOR':3, 'SILK_WORKSHOP':3}
+    max_lvls = {'MOTH_GLADE':4, 'RICE_FARM':3, 'THREAD_PROCESSOR':3, 'SILK_WORKSHOP':3,
+                'KAOLIN_QUARRY':4, 'CLAY_PROCESSOR':5} #, 'PORCELAIN_WORKSHOP':4}
+
+    # -------------------------------
+    ######## SILK_WORKSHOP
+    # -------------------------------
+
+    v_target_level = 3
+    v_target_count = 3
 
     result = opt.optimize_for_target_building(
         culture_code="CHINA",
         cycle_code="H1",
         target_building_type_code="SILK_WORKSHOP",
-        target_level=3,
-        target_count=1,
+        target_level=v_target_level,
+        target_count=v_target_count,
         max_level_by_type=max_lvls
     )
 
@@ -343,7 +353,32 @@ if __name__ == '__main__':
         culture_code="CHINA",
         cycle_code="H1",
         target_building_type_code="SILK_WORKSHOP",
-        target_level=3,
-        target_count=1,
+        target_level=v_target_level,
+        target_count=v_target_count,
+        result=result
+    )
+
+    # -------------------------------
+    ######## PORCELAIN_WORKSHOP
+    # -------------------------------
+    v_target_level = 4
+    v_target_count = 1
+
+    result = opt.optimize_for_target_building(
+        culture_code="CHINA",
+        cycle_code="H1",
+        target_building_type_code="PORCELAIN_WORKSHOP",
+        target_level=v_target_level,
+        target_count=v_target_count,
+        max_level_by_type=max_lvls
+    )
+
+    print_human_report(
+        repo,
+        culture_code="CHINA",
+        cycle_code="H1",
+        target_building_type_code="PORCELAIN_WORKSHOP",
+        target_level=v_target_level,
+        target_count=v_target_count,
         result=result
     )
